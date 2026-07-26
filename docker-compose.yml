@@ -1,0 +1,26 @@
+services:
+  bouncer:
+    build: .
+    image: ${IMAGE:-bouncer:local}
+    container_name: bouncer
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    volumes:
+      - ./config/allowlist.toml:/app/config/allowlist.toml:ro
+    environment:
+      - LISTEN_ADDR=${LISTEN_ADDR:-0.0.0.0:8080}
+      - ALLOWLIST_PATH=${ALLOWLIST_PATH:-/app/config/allowlist.toml}
+      - RUST_LOG=${RUST_LOG:-info}
+    networks:
+      - proxy-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  proxy-network:
+    driver: bridge

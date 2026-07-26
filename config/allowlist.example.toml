@@ -1,0 +1,10 @@
+# Map of route alias -> real upstream host.
+# Copy this file to allowlist.toml (untracked, kept local) and edit there.
+# The running process watches allowlist.toml and reloads it automatically
+# on change — no restart needed.
+#
+# Request shape:  http://your-proxy:8080/<alias>/<path...>?<query>
+# Forwarded to:   https://<host>/<path...>?<query>
+
+[targets]
+kucoin = "api.kucoin.com"

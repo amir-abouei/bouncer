@@ -1,0 +1,31 @@
+[package]
+name = "bouncer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "bouncer"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "webpki-roots", "ring"] }
+http-body-util = "0.1"
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+notify = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+once_cell = "1"
+anyhow = "1"
+arc-swap = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

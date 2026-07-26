@@ -1,0 +1,13 @@
+/target
+.env
+*.log
+
+# real allowlist config — copy from config/allowlist.example.toml
+/config/allowlist.toml
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
