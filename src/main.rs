@@ -16,6 +16,7 @@ use tokio::net::TcpListener;
 
 use bouncer::allowlist::{self, SharedAllowlist};
 use bouncer::auth;
+use bouncer::routing;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type ProxyBody = BoxBody<Bytes, BoxError>;
@@ -71,17 +72,6 @@ fn unauthorized_response() -> Response<ProxyBody> {
         .unwrap()
 }
 
-fn split_alias(path: &str) -> Option<(&str, &str)> {
-    let trimmed = path.trim_start_matches('/');
-    if trimmed.is_empty() {
-        return None;
-    }
-    match trimmed.split_once('/') {
-        Some((alias, rest)) => Some((alias, rest)),
-        None => Some((trimmed, "")),
-    }
-}
-
 fn is_hop_by_hop(name: &HeaderName) -> bool {
     HOP_BY_HOP.contains(&name.as_str())
 }
@@ -101,10 +91,15 @@ async fn handle(
             .unwrap());
     }
 
-    let Some((alias, rest)) = split_alias(path) else {
+    let host_header = parts
+        .headers
+        .get(routing::HOST_HEADER_NAME)
+        .and_then(|v| v.to_str().ok());
+
+    let Some((alias, rest)) = routing::extract_alias(path, host_header) else {
         return Ok(plain_response(
             StatusCode::NOT_FOUND,
-            "Specify a proxy target, e.g. /telegram/<path>\n",
+            "Specify a proxy target, e.g. /telegram/<path> or X-Bouncer-Host: telegram\n",
         ));
     };
 
@@ -149,7 +144,10 @@ async fn handle(
     {
         let out_headers = upstream_req_builder.headers_mut().unwrap();
         for (name, value) in parts.headers.iter() {
-            if is_hop_by_hop(name) || name.as_str() == auth::HEADER_NAME {
+            if is_hop_by_hop(name)
+                || name.as_str() == auth::HEADER_NAME
+                || name.as_str() == routing::HOST_HEADER_NAME
+            {
                 continue;
             }
             out_headers.insert(name.clone(), value.clone());

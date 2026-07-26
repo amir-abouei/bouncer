@@ -1,8 +1,9 @@
 # bouncer
 
-Tiny allowlist-based reverse proxy. Requests to `/<alias>/<path>` are
-forwarded to the upstream host mapped to `<alias>` in
-`config/allowlist.toml`. Unlisted aliases get `403`.
+Tiny allowlist-based reverse proxy. Requests to `/<alias>/<path>` (or with
+the alias given via an `X-Bouncer-Host` header — see below) are forwarded
+to the upstream host mapped to `<alias>` in `config/allowlist.toml`.
+Unlisted aliases get `403`.
 
 ## Quick start
 
@@ -28,6 +29,31 @@ kucoin = { host = "api.kucoin.com" }
 
 Changes are picked up automatically — no restart needed. The file is
 gitignored since it usually lists real, possibly sensitive hosts.
+
+## Selecting a target: path vs. header
+
+By default the alias comes from the URL path (`/<alias>/<rest>`), which
+works with anything that can only be pointed at a URL — curl, webhooks,
+SDKs configured with a base URL.
+
+Some HTTP clients build request paths themselves via `Url::join`-style
+joining (teloxide-core, reqwest, browsers, ...). Per the URL spec, a
+leading `/` in the joined path is absolute, so it silently discards
+whatever path an alias-carrying base URL had — `/kucoin` never survives a
+client doing `base.join("/bot<token>/getMe")`. For these clients, send the
+alias in a header instead:
+
+```bash
+curl -H "X-Bouncer-Host: telegram" http://localhost:8080/bot<token>/getMe
+```
+
+When `X-Bouncer-Host` is present, its value is used as the alias and the
+**entire** request path is forwarded upstream unmodified — nothing is
+stripped. It takes precedence over the path-based alias if both are
+present, and it's stripped from the request before it reaches the
+upstream, same as `X-Bouncer-Token`. Most client libraries let you set a
+default header on the underlying HTTP client (e.g. `reqwest::ClientBuilder
+::default_headers`) so you only configure this once, not per call.
 
 ## Requiring auth on a route
 
