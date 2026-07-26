@@ -12,6 +12,7 @@ services:
       - LISTEN_ADDR=${LISTEN_ADDR:-0.0.0.0:8080}
       - ALLOWLIST_PATH=${ALLOWLIST_PATH:-/app/config/allowlist.toml}
       - RUST_LOG=${RUST_LOG:-info}
+      - JWT_SECRET=${JWT_SECRET:-}
     networks:
       - proxy-network
     healthcheck:
