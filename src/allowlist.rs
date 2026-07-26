@@ -5,22 +5,52 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-#[derive(Debug, Deserialize)]
-struct RawConfig {
-    targets: HashMap<String, String>,
+#[derive(Debug, Clone, Deserialize)]
+pub struct Target {
+    pub host: String,
+    #[serde(default)]
+    pub auth: bool,
 }
 
-pub type SharedAllowlist = Arc<ArcSwap<HashMap<String, String>>>;
+#[derive(Debug, Deserialize)]
+struct RawConfig {
+    targets: HashMap<String, Target>,
+}
 
-fn load_from_disk(path: &Path) -> anyhow::Result<HashMap<String, String>> {
+pub type SharedAllowlist = Arc<ArcSwap<HashMap<String, Target>>>;
+
+fn load_from_disk(path: &Path) -> anyhow::Result<HashMap<String, Target>> {
     let contents = std::fs::read_to_string(path)?;
     let raw: RawConfig = toml::from_str(&contents)?;
     Ok(raw.targets)
 }
 
-pub fn load_and_watch(path: &str) -> anyhow::Result<SharedAllowlist> {
+pub fn check_fail_closed(
+    targets: &HashMap<String, Target>,
+    jwt_secret_configured: bool,
+) -> anyhow::Result<()> {
+    if jwt_secret_configured {
+        return Ok(());
+    }
+    let missing: Vec<&str> = targets
+        .iter()
+        .filter(|(_, t)| t.auth)
+        .map(|(alias, _)| alias.as_str())
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "alias(es) {:?} require auth = true but JWT_SECRET is not set",
+            missing
+        )
+    }
+}
+
+pub fn load_and_watch(path: &str, jwt_secret_configured: bool) -> anyhow::Result<SharedAllowlist> {
     let path_buf = std::path::PathBuf::from(path);
     let initial = load_from_disk(&path_buf)?;
+    check_fail_closed(&initial, jwt_secret_configured)?;
     tracing::info!(targets = ?initial, "loaded allowlist");
 
     let shared: SharedAllowlist = Arc::new(ArcSwap::from_pointee(initial));
@@ -44,6 +74,12 @@ pub fn load_and_watch(path: &str) -> anyhow::Result<SharedAllowlist> {
                     ) {
                         match load_from_disk(&watch_path) {
                             Ok(new_targets) => {
+                                if let Err(e) =
+                                    check_fail_closed(&new_targets, jwt_secret_configured)
+                                {
+                                    tracing::error!(error = %e, "failed to reload allowlist, keeping previous config");
+                                    continue;
+                                }
                                 tracing::info!(targets = ?new_targets, "allowlist reloaded");
                                 watched.store(Arc::new(new_targets));
                             }
@@ -61,6 +97,6 @@ pub fn load_and_watch(path: &str) -> anyhow::Result<SharedAllowlist> {
     Ok(shared)
 }
 
-pub fn resolve(allowlist: &SharedAllowlist, alias: &str) -> Option<String> {
+pub fn resolve(allowlist: &SharedAllowlist, alias: &str) -> Option<Target> {
     allowlist.load().get(alias).cloned()
 }

@@ -1,8 +1,9 @@
 # bouncer
 
-Tiny allowlist-based reverse proxy. Requests to `/<alias>/<path>` are
-forwarded to the upstream host mapped to `<alias>` in
-`config/allowlist.toml`. Unlisted aliases get `403`.
+Tiny allowlist-based reverse proxy. Requests to `/<alias>/<path>` (or with
+the alias given via an `X-Bouncer-Host` header — see below) are forwarded
+to the upstream host mapped to `<alias>` in `config/allowlist.toml`.
+Unlisted aliases get `403`.
 
 ## Quick start
 
@@ -23,11 +24,84 @@ Edit `config/allowlist.toml`:
 
 ```toml
 [targets]
-kucoin = "api.kucoin.com"
+kucoin = { host = "api.kucoin.com" }
 ```
 
 Changes are picked up automatically — no restart needed. The file is
 gitignored since it usually lists real, possibly sensitive hosts.
+
+## Selecting a target: path vs. header
+
+By default the alias comes from the URL path (`/<alias>/<rest>`), which
+works with anything that can only be pointed at a URL — curl, webhooks,
+SDKs configured with a base URL.
+
+Some HTTP clients build request paths themselves via `Url::join`-style
+joining (teloxide-core, reqwest, browsers, ...). Per the URL spec, a
+leading `/` in the joined path is absolute, so it silently discards
+whatever path an alias-carrying base URL had — `/kucoin` never survives a
+client doing `base.join("/bot<token>/getMe")`. For these clients, send the
+alias in a header instead:
+
+```bash
+curl -H "X-Bouncer-Host: telegram" http://localhost:8080/bot<token>/getMe
+```
+
+When `X-Bouncer-Host` is present, its value is used as the alias and the
+**entire** request path is forwarded upstream unmodified — nothing is
+stripped. It takes precedence over the path-based alias if both are
+present, and it's stripped from the request before it reaches the
+upstream, same as `X-Bouncer-Token`. Most client libraries let you set a
+default header on the underlying HTTP client (e.g. `reqwest::ClientBuilder
+::default_headers`) so you only configure this once, not per call.
+
+## Requiring auth on a route
+
+Add `auth = true` to any target to lock it behind a JWT:
+
+```toml
+[targets]
+kucoin = { host = "api.kucoin.com" }                          # open, auth defaults to false
+webhook = { host = "internal.example.com", auth = true }       # requires a JWT
+```
+
+If any target has `auth = true`, you must set `JWT_SECRET` (an HS256 shared
+secret) in the environment — bouncer refuses to start otherwise, so a route
+can never end up "protected" by accident with nothing actually checking it.
+
+Requests to an `auth = true` alias must carry `X-Bouncer-Token: <token>`.
+This is a separate header from `Authorization` on purpose — `Authorization`
+is reserved for whatever credentials the upstream target itself expects
+(an API key, its own bearer token, etc.) and bouncer forwards it through
+untouched; `X-Bouncer-Token` is stripped before the request leaves bouncer,
+so the upstream never sees it. bouncer verifies only the HS256 signature —
+no `exp`/`nbf`/`aud`/`iss`/`sub` claim is checked, so a minted token stays
+valid indefinitely and there's nothing to rotate on a schedule. The
+trade-off: there's no per-token revocation — the only way to invalidate a
+token is to rotate `JWT_SECRET` itself, which invalidates every token at
+once (and requires a restart). Missing or badly-signed tokens get a `401`
+with a generic body — the specific reason is only logged server-side,
+never returned to the caller.
+
+bouncer only **verifies** tokens — it doesn't issue them. Sign your own
+tokens with whatever process/library you like using the same secret as
+`JWT_SECRET`. For testing, a minting helper is included:
+
+```bash
+JWT_SECRET=your-secret cargo run --example mint_token
+```
+
+prints a signed HS256 token to stdout, ready to use as:
+
+```bash
+curl -H "X-Bouncer-Token: $(JWT_SECRET=your-secret cargo run -q --example mint_token)" \
+  http://localhost:8080/webhook/...
+```
+
+`auth = true`/`false` on existing or new aliases hot-reloads the same way
+allowlist changes always have. `JWT_SECRET` itself does not hot-reload —
+rotating it requires a restart, same as `LISTEN_ADDR`/`ALLOWLIST_PATH`.
+`/healthz` is never auth-gated.
 
 ## Local dev (without Docker)
 
@@ -44,6 +118,7 @@ ALLOWLIST_PATH=config/allowlist.toml ./target/release/bouncer
 | `LISTEN_ADDR`    | `0.0.0.0:8080`           | Bind address                    |
 | `ALLOWLIST_PATH` | `config/allowlist.toml`  | Path to the allowlist config    |
 | `RUST_LOG`       | `info`                   | Log level                       |
+| `JWT_SECRET`     | unset                    | HS256 shared secret; required only if a target has `auth = true` |
 | `HOST_PORT`      | `8080`                   | (Compose only) host port        |
 | `IMAGE`          | `bouncer:local`          | (Compose only) image to build/pull |
 

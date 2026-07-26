@@ -7,4 +7,12 @@
 # Forwarded to:   https://<host>/<path...>?<query>
 
 [targets]
-kucoin = "api.kucoin.com"
+kucoin = { host = "api.kucoin.com" }
+
+# Requires a valid HS256 JWT (X-Bouncer-Token: <token>, signed with
+# JWT_SECRET) on every request to this alias.
+# If ANY target below has auth = true and JWT_SECRET is not set in the environment,
+# bouncer refuses to start.
+
+# webhook-a = { host = "internal-a.example.com", auth = true }
+# webhook-b = { host = "internal-b.example.com"}

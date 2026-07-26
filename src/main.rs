@@ -1,5 +1,3 @@
-mod allowlist;
-
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full, Limited};
@@ -16,7 +14,9 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
-use allowlist::SharedAllowlist;
+use bouncer::allowlist::{self, SharedAllowlist};
+use bouncer::auth;
+use bouncer::routing;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type ProxyBody = BoxBody<Bytes, BoxError>;
@@ -64,15 +64,12 @@ fn plain_response(status: StatusCode, msg: &'static str) -> Response<ProxyBody> 
         .unwrap()
 }
 
-fn split_alias(path: &str) -> Option<(&str, &str)> {
-    let trimmed = path.trim_start_matches('/');
-    if trimmed.is_empty() {
-        return None;
-    }
-    match trimmed.split_once('/') {
-        Some((alias, rest)) => Some((alias, rest)),
-        None => Some((trimmed, "")),
-    }
+fn unauthorized_response() -> Response<ProxyBody> {
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header("content-type", "text/plain")
+        .body(box_body(Full::new(Bytes::from_static(b"Unauthorized\n"))))
+        .unwrap()
 }
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {
@@ -94,17 +91,31 @@ async fn handle(
             .unwrap());
     }
 
-    let Some((alias, rest)) = split_alias(path) else {
+    let host_header = parts
+        .headers
+        .get(routing::HOST_HEADER_NAME)
+        .and_then(|v| v.to_str().ok());
+
+    let Some((alias, rest)) = routing::extract_alias(path, host_header) else {
         return Ok(plain_response(
             StatusCode::NOT_FOUND,
-            "Specify a proxy target, e.g. /telegram/<path>\n",
+            "Specify a proxy target, e.g. /telegram/<path> or X-Bouncer-Host: telegram\n",
         ));
     };
 
-    let Some(upstream_host) = allowlist::resolve(&allowlist, alias) else {
+    let Some(target) = allowlist::resolve(&allowlist, alias) else {
         tracing::warn!(alias, "rejected: alias not in allowlist");
         return Ok(plain_response(StatusCode::FORBIDDEN, "Unknown proxy target\n"));
     };
+
+    if target.auth {
+        if let Err(e) = auth::authorize(&parts.headers) {
+            tracing::warn!(alias, error = %e, "rejected: unauthorized");
+            return Ok(unauthorized_response());
+        }
+    }
+
+    let upstream_host = target.host;
 
     let mut upstream_url = String::with_capacity(8 + upstream_host.len() + rest.len() + 1);
     upstream_url.push_str("https://");
@@ -133,7 +144,10 @@ async fn handle(
     {
         let out_headers = upstream_req_builder.headers_mut().unwrap();
         for (name, value) in parts.headers.iter() {
-            if is_hop_by_hop(name) {
+            if is_hop_by_hop(name)
+                || name.as_str() == auth::HEADER_NAME
+                || name.as_str() == routing::HOST_HEADER_NAME
+            {
                 continue;
             }
             out_headers.insert(name.clone(), value.clone());
@@ -191,9 +205,11 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    let jwt_secret_configured = auth::secret_configured();
+
     let config_path =
         std::env::var("ALLOWLIST_PATH").unwrap_or_else(|_| "config/allowlist.toml".to_string());
-    let allowlist = allowlist::load_and_watch(&config_path)?;
+    let allowlist = allowlist::load_and_watch(&config_path, jwt_secret_configured)?;
 
     let addr: SocketAddr = std::env::var("LISTEN_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8080".to_string())
